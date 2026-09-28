@@ -1,0 +1,986 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dechonk: Find &amp; delete node_modules and Rust target folders eating your disk space</title>
+  <meta name="description" content="node_modules got chonky? Dechonk finds every dependency folder and cargo target dir on your machine and one click sends the blackholes to the Trash. Free, fast, Trash-safe.">
+  <meta name="theme-color" content="#09090b">
+
+  <link rel="canonical" href="https://chengsokdara.github.io/dechonk/">
+  <link rel="icon" href="./assets/img/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" sizes="32x32" href="./assets/img/favicon-32.png">
+  <link rel="apple-touch-icon" href="./assets/img/apple-touch-icon.png">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Dechonk">
+  <meta property="og:title" content="Some folders bend spacetime. Delete them.">
+  <meta property="og:description" content="Find every node_modules and Rust target folder on your machine and delete them in one click. Safely, via the Trash.">
+  <meta property="og:url" content="https://chengsokdara.github.io/dechonk/">
+  <meta property="og:image" content="https://chengsokdara.github.io/dechonk/assets/img/og-image.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="A black hole with build folders spiraling into it, beside the words: Some folders bend spacetime. Delete them.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Some folders bend spacetime. Delete them.">
+  <meta name="twitter:description" content="Find every node_modules and Rust target folder on your machine and delete them in one click. Safely, via the Trash.">
+  <meta name="twitter:image" content="https://chengsokdara.github.io/dechonk/assets/img/og-image.png">
+
+  <link rel="preload" href="./assets/fonts/space-grotesk-var.woff2" as="font" type="font/woff2" crossorigin>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Dechonk",
+    "operatingSystem": "macOS, Windows, Linux",
+    "applicationCategory": "UtilitiesApplication",
+    "description": "Dechonk scans your machine for node_modules folders and Rust target directories, shows how much space they hoard, and reclaims them in one click. Safely, via the OS Trash.",
+    "softwareVersion": "0.3.0",
+    "url": "https://chengsokdara.github.io/dechonk/",
+    "downloadUrl": "https://github.com/chengsokdara/dechonk/releases",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "Is deleting node_modules safe?",
+        "acceptedAnswer": { "@type": "Answer", "text": "Yes. Your source code is never touched, and everything Dechonk removes is regenerable: dependencies come back with npm install (or pnpm/yarn/bun install; Dechonk doesn't judge), Rust build output with cargo build. They're the only multi-gigabyte folders on your machine you're supposed to delete." }
+      },
+      {
+        "@type": "Question",
+        "name": "Does Dechonk delete Rust target folders?",
+        "acceptedAnswer": { "@type": "Answer", "text": "Yes, but carefully. A folder named target is only ever reported when cargo's own CACHEDIR.TAG marker file is inside it, which is how cargo flags its build cache. A plain folder that happens to be named target is walked past, never reported, never deleted." }
+      },
+      {
+        "@type": "Question",
+        "name": "Does Dechonk delete anything permanently?",
+        "acceptedAnswer": { "@type": "Answer", "text": "No. Folders always stop at the event horizon first (your OS Trash, fully recoverable). Dropping them into the singularity (permanent deletion) is opt-in and always behind a confirmation dialog that tells you exactly how much space it frees." }
+      },
+      {
+        "@type": "Question",
+        "name": "How fast is the scan?",
+        "acceptedAnswer": { "@type": "Answer", "text": "The walker is written in Rust and runs discovery and size enrichment in parallel. Whole-drive scans typically finish in seconds, with a live counter while it works." }
+      },
+      {
+        "@type": "Question",
+        "name": "Which platforms does Dechonk support?",
+        "acceptedAnswer": { "@type": "Answer", "text": "macOS, Windows, and Linux. The app is built with Tauri, weighs about 4 MB, and opens instantly. Free, no account required." }
+      },
+      {
+        "@type": "Question",
+        "name": "Why is it called Dechonk?",
+        "acceptedAnswer": { "@type": "Answer", "text": "Because the internet decided oversized folders are chonky, and we are not strong enough to fight the internet. Dechonking is the act of restoring a folder to a reasonable mass." }
+      }
+    ]
+  }
+  </script>
+
+  <style>
+    :root {
+      --bg: #09090b;
+      --bg-card: rgba(24, 24, 27, 0.5);
+      --bg-card-solid: #101013;
+      --border: #27272a;
+      --border-soft: #1f1f23;
+      --text: #f4f4f5;
+      --text-dim: #a1a1aa;
+      --text-faint: #71717a;
+      --emerald: #34d399;
+      --emerald-strong: #10b981;
+      --amber: #fcd34d;
+      --orange: #fb923c;
+      --rose: #fb7185;
+      --font-display: "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --font-mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    }
+
+    /* Space Grotesk variable font: one file covers weights 300 to 700 */
+    @font-face {
+      font-family: "Space Grotesk";
+      font-style: normal;
+      font-weight: 300 700;
+      font-display: swap;
+      src: url("./assets/fonts/space-grotesk-var.woff2") format("woff2");
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(ellipse 80% 50% at 70% -10%, rgba(16, 185, 129, 0.06), transparent),
+        radial-gradient(circle 1px at 12% 22%, rgba(244,244,245,.35) 99%, transparent),
+        radial-gradient(circle 1px at 78% 12%, rgba(244,244,245,.28) 99%, transparent),
+        radial-gradient(circle 1.5px at 34% 68%, rgba(244,244,245,.22) 99%, transparent),
+        radial-gradient(circle 1px at 90% 54%, rgba(244,244,245,.30) 99%, transparent),
+        radial-gradient(circle 1px at 55% 88%, rgba(244,244,245,.24) 99%, transparent),
+        radial-gradient(circle 1.5px at 8% 82%, rgba(244,244,245,.20) 99%, transparent),
+        radial-gradient(circle 1px at 66% 40%, rgba(244,244,245,.20) 99%, transparent),
+        var(--bg);
+      color: var(--text);
+      font-family: var(--font-body);
+      font-size: 16px;
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      overflow-x: hidden;
+    }
+
+    .container { max-width: 1120px; margin-inline: auto; padding-inline: 24px; }
+    a { color: var(--emerald); text-decoration: none; }
+    a:hover { text-decoration: underline; text-underline-offset: 3px; }
+    :focus-visible { outline: 2px solid var(--emerald); outline-offset: 3px; border-radius: 4px; }
+    ::selection { background: rgba(16, 185, 129, 0.35); }
+
+    code, .mono { font-family: var(--font-mono); }
+    .inline-code {
+      font-family: var(--font-mono);
+      font-size: 0.88em;
+      background: rgba(24, 24, 27, 0.9);
+      border: 1px solid var(--border-soft);
+      border-radius: 6px;
+      padding: 0.12em 0.4em;
+      white-space: nowrap;
+    }
+
+    /* ---------- nav ---------- */
+    .nav {
+      position: sticky; top: 0; z-index: 50;
+      background: rgba(9, 9, 11, 0.75);
+      -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .nav-inner { display: flex; align-items: center; gap: 28px; height: 64px; }
+    .logo {
+      display: inline-flex; align-items: center; gap: 10px;
+      font-family: var(--font-display); font-weight: 700; font-size: 1.15rem;
+      color: var(--text); letter-spacing: -0.01em;
+    }
+    .logo:hover { text-decoration: none; }
+    .nav-links { display: flex; gap: 24px; margin-left: auto; align-items: center; }
+    .nav-links a:not(.btn) { color: var(--text-dim); font-size: 0.92rem; font-weight: 500; }
+    .nav-links a:not(.btn):hover { color: var(--text); text-decoration: none; }
+    .nav .btn { padding: 0.55em 1.1em; font-size: 0.9rem; }
+    @media (max-width: 640px) { .nav-links a:not(.btn) { display: none; } }
+
+    /* ---------- buttons ---------- */
+    .btn {
+      display: inline-flex; align-items: center; gap: 0.55em;
+      font-family: var(--font-display); font-weight: 700; font-size: 0.98rem;
+      padding: 0.8em 1.5em; border-radius: 12px; border: 0;
+      cursor: pointer; line-height: 1.2; white-space: nowrap;
+      transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+    }
+    .btn:hover { text-decoration: none; transform: translateY(-1px); }
+    .btn--primary {
+      background: var(--emerald); color: #022c22;
+      box-shadow: 0 0 28px rgba(52, 211, 153, 0.38), 0 2px 8px rgba(0, 0, 0, 0.4);
+    }
+    .btn--primary:hover { background: #4be4aa; box-shadow: 0 0 36px rgba(52, 211, 153, 0.5), 0 2px 8px rgba(0, 0, 0, 0.4); }
+    .btn--ghost {
+      background: rgba(24, 24, 27, 0.6); color: var(--text);
+      box-shadow: inset 0 0 0 1px var(--border);
+    }
+    .btn--ghost:hover { box-shadow: inset 0 0 0 1px #3f3f46; background: rgba(39, 39, 42, 0.6); }
+    .btn svg { flex: none; }
+
+    /* ---------- badges ---------- */
+    .badge {
+      display: inline-flex; align-items: center;
+      font-family: var(--font-display); font-weight: 700; font-size: 0.7rem;
+      letter-spacing: 0.09em; padding: 0.34em 0.75em; border-radius: 999px;
+      white-space: nowrap;
+    }
+    .badge--hefty  { color: var(--amber);  background: rgba(252, 211, 77, 0.09); box-shadow: inset 0 0 0 1px rgba(252, 211, 77, 0.32); }
+    .badge--mega   { color: var(--orange); background: rgba(251, 146, 60, 0.10); box-shadow: inset 0 0 0 1px rgba(251, 146, 60, 0.32); }
+    .badge--ohlawd { color: var(--rose);   background: rgba(251, 113, 133, 0.10); box-shadow: inset 0 0 0 1px rgba(251, 113, 133, 0.32); }
+    .badge--age    { color: var(--text-faint); background: rgba(24, 24, 27, 0.8); box-shadow: inset 0 0 0 1px var(--border); font-weight: 500; }
+    .badge--chip   { color: var(--emerald); background: rgba(16, 185, 129, 0.08); box-shadow: inset 0 0 0 1px rgba(16, 185, 129, 0.3); font-family: var(--font-mono); font-weight: 500; font-size: 0.72rem; letter-spacing: 0.14em; padding: 0.5em 1em; }
+    .badge--kind   { color: #a78bfa; background: rgba(167, 139, 250, 0.09); box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.35); font-family: var(--font-mono); font-weight: 500; font-size: 0.62rem; letter-spacing: 0.1em; padding: 0.18em 0.55em; vertical-align: 1px; }
+
+    /* ---------- sections ---------- */
+    section { padding: 88px 0; }
+    @media (max-width: 640px) { section { padding: 64px 0; } }
+    .eyebrow {
+      font-family: var(--font-mono); font-size: 0.72rem; font-weight: 500;
+      letter-spacing: 0.24em; text-transform: uppercase; color: var(--emerald);
+      margin: 0 0 14px;
+    }
+    h1, h2, h3 { font-family: var(--font-display); letter-spacing: -0.025em; }
+    h2 { font-size: clamp(1.85rem, 4.5vw, 2.7rem); font-weight: 700; line-height: 1.15; margin: 0 0 18px; }
+    h3 { font-size: 1.15rem; font-weight: 700; margin: 0 0 8px; }
+    .section-lede { color: var(--text-dim); font-size: 1.1rem; max-width: 640px; margin: 0; }
+
+    /* ---------- hero ---------- */
+    .hero { padding: 72px 0 96px; }
+    .hero-grid {
+      display: grid; grid-template-columns: 1.02fr 0.98fr;
+      gap: 48px; align-items: center; min-height: 560px;
+    }
+    @media (max-width: 900px) {
+      .hero { padding-top: 48px; }
+      .hero-grid { grid-template-columns: 1fr; gap: 32px; min-height: 0; }
+    }
+    .hero h1 {
+      font-size: clamp(2.5rem, 6.2vw, 4.3rem); font-weight: 700;
+      line-height: 1.04; margin: 22px 0 20px;
+    }
+    .hero h1 .accent { color: var(--emerald); text-shadow: 0 0 40px rgba(52, 211, 153, 0.35); }
+    .hero-sub { color: var(--text-dim); font-size: 1.16rem; max-width: 33em; margin: 0 0 32px; }
+    .hero-sub strong { color: var(--text); font-weight: 600; }
+    .hero-ctas { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 22px; }
+    .trust {
+      display: flex; flex-wrap: wrap; gap: 8px 20px;
+      color: var(--text-faint); font-size: 0.86rem;
+    }
+    .trust span { display: inline-flex; align-items: center; gap: 7px; }
+    .trust svg { color: var(--emerald); flex: none; }
+    .hero-du {
+      margin-top: 30px; font-family: var(--font-mono); font-size: 0.8rem;
+      color: var(--text-faint);
+    }
+    .hero-du .out { color: var(--rose); }
+    .hero-du .cmt { color: #3f3f46; }
+
+    .hole-wrap {
+      position: relative; width: 100%; max-width: 620px; aspect-ratio: 1;
+      margin-inline: auto;
+      filter: saturate(1.05);
+      -webkit-mask-image: radial-gradient(ellipse 94% 90% at 50% 50%, #000 66%, transparent 94%);
+      mask-image: radial-gradient(ellipse 94% 90% at 50% 50%, #000 66%, transparent 94%);
+    }
+    @media (max-width: 900px) { .hole-wrap { max-width: 420px; } }
+    .hole-wrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+    .scanline {
+      height: 2px; border: 0; margin: 0;
+      background: linear-gradient(90deg, transparent, var(--emerald), transparent);
+      background-size: 50% 100%; background-repeat: no-repeat;
+      animation: scanline 3.2s linear infinite; opacity: 0.55;
+    }
+    @keyframes scanline { 0% { background-position: -60% 0; } 100% { background-position: 160% 0; } }
+
+    /* ---------- problem / scan table ---------- */
+    .scanboard {
+      margin-top: 44px; border-radius: 16px; overflow: hidden;
+      background: var(--bg-card); box-shadow: inset 0 0 0 1px var(--border);
+      -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+    }
+    .scanboard-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 13px 20px; border-bottom: 1px solid var(--border-soft);
+      font-family: var(--font-mono); font-size: 0.78rem; color: var(--text-faint);
+    }
+    .scanboard-head .dot { width: 10px; height: 10px; border-radius: 50%; background: #3f3f46; }
+    .scanboard-head .dot--live { background: var(--emerald); box-shadow: 0 0 8px rgba(52, 211, 153, 0.8); }
+    .scanrow {
+      display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto;
+      gap: 18px; align-items: center; padding: 13px 20px;
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .scanrow--total { border-bottom: 0; background: rgba(16, 185, 129, 0.04); }
+    .scanrow .path {
+      font-family: var(--font-mono); font-size: 0.86rem; color: var(--text);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .scanrow .path .dim { color: var(--text-faint); }
+    .scanrow .size {
+      font-family: var(--font-display); font-weight: 700; font-size: 0.95rem;
+      text-align: right; min-width: 72px; font-variant-numeric: tabular-nums;
+    }
+    .scanrow--total .size { color: var(--emerald); }
+    .scanrow .time { font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-faint); text-align: right; }
+    .scan-caption { margin-top: 14px; font-size: 0.85rem; color: var(--text-faint); font-style: italic; }
+    @media (max-width: 640px) {
+      .scanrow { grid-template-columns: minmax(0, 1fr) auto auto; }
+      .scanrow .badge--age { display: none; }
+    }
+
+    /* ---------- chonk cards ---------- */
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 44px; }
+    @media (max-width: 800px) { .grid-3 { grid-template-columns: 1fr; } }
+    .card {
+      background: var(--bg-card); border-radius: 16px; padding: 26px 24px;
+      box-shadow: inset 0 0 0 1px var(--border);
+      -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+    }
+    .card p { color: var(--text-dim); font-size: 0.95rem; margin: 12px 0 0; }
+    .card .threshold { font-family: var(--font-mono); font-size: 0.78rem; color: var(--text-faint); margin-top: 14px; }
+    .card--hefty:hover, .card--mega:hover, .card--ohlawd:hover { transform: translateY(-2px); }
+    .card--hefty  { transition: box-shadow 0.2s ease; } .card--hefty:hover  { box-shadow: inset 0 0 0 1px rgba(252, 211, 77, 0.45), 0 8px 30px rgba(0, 0, 0, 0.35); }
+    .card--mega   { transition: box-shadow 0.2s ease; } .card--mega:hover   { box-shadow: inset 0 0 0 1px rgba(251, 146, 60, 0.45), 0 8px 30px rgba(0, 0, 0, 0.35); }
+    .card--ohlawd { transition: box-shadow 0.2s ease; } .card--ohlawd:hover { box-shadow: inset 0 0 0 1px rgba(251, 113, 133, 0.45), 0 8px 30px rgba(0, 0, 0, 0.35); }
+    .chonk-note {
+      margin-top: 22px; color: var(--text-faint); font-size: 0.9rem; font-style: italic;
+      display: flex; flex-wrap: wrap; gap: 8px 26px; align-items: baseline;
+    }
+
+    /* ---------- steps ---------- */
+    .step { position: relative; padding-top: 8px; }
+    .step-num {
+      font-family: var(--font-display); font-weight: 700; font-size: 2.6rem;
+      color: transparent; -webkit-text-stroke: 1.5px rgba(52, 211, 153, 0.55);
+      line-height: 1; margin-bottom: 14px;
+    }
+    .step p { color: var(--text-dim); font-size: 0.95rem; margin: 0; }
+
+    /* ---------- physics ---------- */
+    .physics { position: relative; }
+    .physics-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 44px; }
+    @media (max-width: 800px) { .physics-grid { grid-template-columns: 1fr; } }
+    .phys-card { position: relative; overflow: hidden; }
+    .phys-card::before {
+      content: ""; position: absolute; inset: 0 0 auto 0; height: 2px;
+      background: linear-gradient(90deg, transparent, rgba(251, 146, 60, 0.6), transparent);
+    }
+    .phys-card .tag {
+      font-family: var(--font-mono); font-size: 0.68rem; letter-spacing: 0.18em;
+      text-transform: uppercase; color: var(--orange);
+    }
+    .phys-card p { color: var(--text-dim); font-size: 0.95rem; margin: 10px 0 0; }
+    .footnote { margin-top: 18px; font-size: 0.82rem; color: var(--text-faint); font-style: italic; }
+
+    /* ---------- never ---------- */
+    .never-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; margin-top: 44px; }
+    @media (max-width: 720px) { .never-grid { grid-template-columns: 1fr; } }
+    .never-item {
+      display: flex; gap: 16px; align-items: flex-start;
+      background: var(--bg-card); border-radius: 16px; padding: 22px;
+      box-shadow: inset 0 0 0 1px var(--border);
+    }
+    .never-item svg { flex: none; color: var(--emerald); margin-top: 2px; }
+    .never-item h3 { font-size: 1.02rem; margin-bottom: 4px; }
+    .never-item p { color: var(--text-dim); font-size: 0.92rem; margin: 0; }
+
+    /* ---------- faq ---------- */
+    .faq-list { max-width: 760px; margin-top: 40px; }
+    .faq-list details {
+      background: var(--bg-card); border-radius: 14px;
+      box-shadow: inset 0 0 0 1px var(--border); margin-bottom: 12px;
+      -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+    }
+    .faq-list summary {
+      cursor: pointer; list-style: none; display: flex; justify-content: space-between;
+      align-items: center; gap: 16px; padding: 18px 22px;
+      font-family: var(--font-display); font-weight: 700; font-size: 1.02rem;
+    }
+    .faq-list summary::-webkit-details-marker { display: none; }
+    .faq-list summary .plus {
+      flex: none; font-family: var(--font-mono); font-weight: 400;
+      color: var(--emerald); font-size: 1.25rem; line-height: 1;
+      transition: transform 0.2s ease;
+    }
+    .faq-list details[open] summary .plus { transform: rotate(45deg); }
+    .faq-list summary .q { flex: 1; }
+    .faq-list details p { color: var(--text-dim); padding: 0 22px 20px; margin: 0; font-size: 0.96rem; }
+
+    /* ---------- final cta ---------- */
+    .final { text-align: center; padding: 110px 0 130px; position: relative; }
+    .final h2 { font-size: clamp(2.1rem, 5.5vw, 3.4rem); }
+    .final .section-lede { margin-inline: auto; }
+    .final .hero-ctas { justify-content: center; margin-top: 36px; }
+    .final .micro { margin-top: 18px; font-family: var(--font-mono); font-size: 0.78rem; color: var(--text-faint); }
+
+    /* ---------- footer ---------- */
+    footer {
+      border-top: 1px solid var(--border-soft); padding: 36px 0 44px;
+      color: var(--text-faint); font-size: 0.86rem;
+    }
+    .footer-inner { display: flex; flex-wrap: wrap; gap: 12px 28px; align-items: baseline; justify-content: space-between; }
+    footer nav { display: flex; gap: 20px; }
+    footer a { color: var(--text-faint); }
+    footer a:hover { color: var(--text-dim); }
+
+    /* ---------- download walkthrough ---------- */
+    .wt-lock { overflow: hidden; }
+    .walkthrough {
+      width: min(560px, calc(100vw - 32px));
+      max-height: calc(100dvh - 48px);
+      border: 0; padding: 0; border-radius: 20px;
+      background: var(--bg-card-solid);
+      color: var(--text);
+      box-shadow: inset 0 0 0 1px var(--border), 0 30px 90px rgba(0, 0, 0, 0.65);
+      overscroll-behavior: contain;
+    }
+    .walkthrough::backdrop {
+      background: rgba(9, 9, 11, 0.72);
+      -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
+    }
+    .walkthrough[open] { animation: wt-pop 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
+    .walkthrough[open]::backdrop { animation: wt-fade 0.3s ease; }
+    @keyframes wt-pop { from { opacity: 0; transform: translateY(16px) scale(0.96); } to { opacity: 1; transform: none; } }
+    @keyframes wt-fade { from { opacity: 0; } }
+
+    .wt-panel {
+      display: flex; flex-direction: column;
+      max-height: calc(100dvh - 48px); overflow-y: auto;
+      padding: 26px 26px 22px;
+    }
+    .wt-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+    .wt-eyebrow {
+      font-family: var(--font-mono); font-size: 0.68rem;
+      letter-spacing: 0.24em; text-transform: uppercase; color: var(--emerald);
+      margin: 0 0 6px;
+    }
+    .wt-title {
+      font-family: var(--font-display); font-size: 1.35rem; font-weight: 700;
+      letter-spacing: -0.02em; margin: 0; line-height: 1.15;
+    }
+    .wt-close {
+      flex: none; width: 34px; height: 34px; border-radius: 10px; border: 0; cursor: pointer;
+      background: rgba(24, 24, 27, 0.6); color: var(--text-dim);
+      box-shadow: inset 0 0 0 1px var(--border);
+      display: inline-flex; align-items: center; justify-content: center;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+    .wt-close:hover { color: var(--text); background: rgba(39, 39, 42, 0.8); }
+
+    .wt-tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+    .wt-tab {
+      font-family: var(--font-display); font-weight: 700; font-size: 0.82rem;
+      padding: 0.5em 1em; border-radius: 999px; border: 0; cursor: pointer;
+      background: rgba(24, 24, 27, 0.6); color: var(--text-faint);
+      box-shadow: inset 0 0 0 1px var(--border);
+      transition: color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+    }
+    .wt-tab:hover { color: var(--text); }
+    .wt-tab[aria-pressed="true"] { color: #022c22; background: var(--emerald); box-shadow: 0 0 18px rgba(52, 211, 153, 0.3); }
+
+    .wt-illus {
+      position: relative; height: 150px; flex: none;
+      border-radius: 14px; overflow: hidden; margin-bottom: 16px;
+      background: rgba(9, 9, 11, 0.65);
+      box-shadow: inset 0 0 0 1px var(--border-soft);
+    }
+    .wt-body { outline: none; }
+    .wt-meta { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .wt-count { font-family: var(--font-mono); font-size: 0.68rem; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-faint); }
+    .wt-dots { display: flex; gap: 6px; }
+    .wt-dot {
+      width: 7px; height: 7px; border-radius: 999px; border: 0; padding: 0; cursor: pointer;
+      background: #3f3f46;
+      transition: background 0.15s ease, transform 0.15s ease;
+    }
+    .wt-dot:hover { background: var(--text-faint); }
+    .wt-dot.is-active { background: var(--emerald); transform: scale(1.25); }
+    .wt-step-title {
+      font-family: var(--font-display); font-size: 1.12rem; font-weight: 700;
+      letter-spacing: -0.01em; margin: 0 0 8px;
+    }
+    .wt-copy { color: var(--text-dim); font-size: 0.95rem; line-height: 1.6; }
+    .wt-copy strong { color: var(--text); }
+
+    .wt-dlstatus { font-family: var(--font-mono); font-size: 0.74rem; color: var(--text-faint); margin: 10px 0 0; }
+    .wt-dlstatus.is-busy { animation: wt-soft 1.2s ease-in-out infinite; }
+    .wt-dlrow { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
+    .wt-dlbtn {
+      font-family: var(--font-display); font-weight: 700; font-size: 0.85rem;
+      padding: 0.6em 1.1em; border-radius: 10px; border: 0; cursor: pointer;
+      display: inline-flex; align-items: center;
+      background: rgba(16, 185, 129, 0.12); color: var(--emerald);
+      box-shadow: inset 0 0 0 1px rgba(16, 185, 129, 0.4);
+      transition: background 0.15s ease;
+    }
+    .wt-dlbtn:hover { background: rgba(16, 185, 129, 0.22); text-decoration: none; }
+    .wt-dlpage { font-size: 0.85rem; }
+
+    .wt-actions { display: flex; justify-content: space-between; gap: 10px; margin-top: 18px; }
+    .wt-nav {
+      font-family: var(--font-display); font-weight: 700; font-size: 0.9rem;
+      padding: 0.65em 1.3em; border-radius: 12px; border: 0; cursor: pointer;
+      transition: transform 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+    }
+    .wt-nav--back { background: rgba(24, 24, 27, 0.6); color: var(--text-dim); box-shadow: inset 0 0 0 1px var(--border); }
+    .wt-nav--back:hover:not(:disabled) { color: var(--text); }
+    .wt-nav--next { background: var(--emerald); color: #022c22; box-shadow: 0 0 22px rgba(52, 211, 153, 0.3); }
+    .wt-nav--next:hover { background: #4be4aa; transform: translateY(-1px); }
+    .wt-nav:disabled { opacity: 0.35; cursor: default; }
+
+    /* scene: download chip (macOS/Windows step 1, wizard reuses the track) */
+    .wt-dlchip {
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      width: min(360px, 82%); display: flex; flex-direction: column; gap: 10px;
+    }
+    .wt-dlarrow { color: var(--emerald); margin-inline: auto; animation: wt-bob 1.5s ease-in-out infinite; }
+    .wt-dltrack {
+      height: 8px; border-radius: 999px; overflow: hidden;
+      background: rgba(63, 63, 70, 0.6); box-shadow: inset 0 0 0 1px var(--border-soft);
+    }
+    .wt-dlfill {
+      display: block; height: 100%; width: 100%; border-radius: 999px;
+      background: linear-gradient(90deg, var(--emerald-strong), var(--emerald));
+      animation: wt-fill 3.8s ease-in-out infinite;
+    }
+    .wt-dlfill--fast { animation-duration: 2.6s; }
+    .wt-dlfile {
+      display: flex; align-items: center; gap: 8px;
+      font-family: var(--font-mono); font-size: 0.72rem; color: var(--text-dim);
+      animation: wt-filepop 3.8s ease infinite;
+    }
+    .wt-dlname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .wt-dltag {
+      flex: none; font-size: 0.6rem; letter-spacing: 0.14em; text-transform: uppercase;
+      color: var(--emerald); background: rgba(16, 185, 129, 0.08);
+      box-shadow: inset 0 0 0 1px rgba(16, 185, 129, 0.3);
+      border-radius: 999px; padding: 0.3em 0.7em;
+    }
+    @keyframes wt-bob { 0%, 100% { transform: translateY(-2px); } 50% { transform: translateY(3px); } }
+    @keyframes wt-fill { 0% { width: 3%; } 42% { width: 100%; } 100% { width: 100%; } }
+    @keyframes wt-filepop { 0%, 34% { opacity: 0; transform: translateY(4px) scale(0.94); } 46%, 88% { opacity: 1; transform: none; } 100% { opacity: 0; transform: translateY(2px); } }
+    @keyframes wt-soft { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+
+    /* scene: mock window (DMG drag) */
+    .wt-win {
+      position: absolute; inset: 10px 14px; border-radius: 10px; overflow: hidden;
+      background: rgba(24, 24, 27, 0.8); box-shadow: inset 0 0 0 1px var(--border-soft);
+    }
+    .wt-winhead {
+      display: flex; align-items: center; gap: 5px; padding: 8px 10px;
+      border-bottom: 1px solid var(--border-soft);
+      font-family: var(--font-mono); font-size: 0.62rem; color: var(--text-faint);
+    }
+    .wt-winhead i { width: 8px; height: 8px; border-radius: 50%; background: #3f3f46; }
+    .wt-winhead i:nth-child(1) { background: var(--rose); opacity: 0.75; }
+    .wt-winhead i:nth-child(2) { background: var(--amber); opacity: 0.75; }
+    .wt-winhead i:nth-child(3) { background: var(--emerald); opacity: 0.75; }
+    .wt-winhead span { margin-left: 8px; }
+    .wt-dmgrow { position: absolute; inset: 16px 10px 8px; }
+    .wt-appicon {
+      position: absolute; left: 35%; top: 50%; margin-top: -26px; width: 52px; text-align: center;
+      animation: wt-drag 4.2s ease-in-out infinite;
+    }
+    .wt-appicon svg { display: block; margin: 0 auto 4px; filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.5)); }
+    .wt-appicon span, .wt-folder span { display: block; font-family: var(--font-mono); font-size: 0.6rem; color: var(--text-faint); }
+    .wt-folder { position: absolute; right: 10%; top: 50%; margin-top: -26px; width: 52px; text-align: center; }
+    .wt-foldershape {
+      position: relative; display: block; width: 44px; height: 30px; margin: 0 auto 5px;
+      border-radius: 5px; background: rgba(39, 39, 42, 0.95);
+      box-shadow: inset 0 0 0 1px var(--border);
+      animation: wt-drop 4.2s ease-in-out infinite;
+    }
+    .wt-foldershape::before {
+      content: ""; position: absolute; left: 0; top: -5px; width: 18px; height: 7px;
+      border-radius: 3px 5px 0 0; background: inherit; box-shadow: inset 0 0 0 1px var(--border);
+    }
+    .wt-dmgarrow { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); color: var(--text-faint); opacity: 0.55; }
+    @keyframes wt-drag { 0%, 12% { left: 12%; } 48%, 62% { left: 58%; } 88%, 100% { left: 12%; } }
+    @keyframes wt-drop { 0%, 46% { transform: none; } 52% { transform: scale(0.92, 0.84) translateY(2px); } 60%, 100% { transform: none; } }
+
+    /* scene: OS warning dialog (Gatekeeper / SmartScreen) */
+    .wt-osdlg {
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      width: min(340px, 84%); border-radius: 12px; padding: 16px;
+      background: rgba(24, 24, 27, 0.92);
+      box-shadow: inset 0 0 0 1px var(--border), 0 14px 40px rgba(0, 0, 0, 0.5);
+      animation: wt-shake 5s ease-in-out infinite;
+    }
+    .wt-osdlg-title {
+      display: flex; align-items: center; gap: 8px;
+      font-family: var(--font-display); font-weight: 700; font-size: 0.88rem;
+      margin-bottom: 6px;
+    }
+    .wt-osdlg-title svg { color: var(--amber); flex: none; }
+    .wt-osdlg p { margin: 0 0 12px; font-size: 0.78rem; color: var(--text-dim); line-height: 1.5; }
+    .wt-osdlg-actions, .wt-wizard-actions { display: flex; justify-content: flex-end; gap: 8px; }
+    .wt-ghostbtn, .wt-gobtn {
+      font-family: var(--font-display); font-weight: 700; font-size: 0.68rem;
+      padding: 0.45em 0.9em; border-radius: 8px;
+    }
+    .wt-ghostbtn { color: var(--text-dim); background: rgba(9, 9, 11, 0.6); box-shadow: inset 0 0 0 1px var(--border); }
+    .wt-gobtn { color: #022c22; background: var(--emerald); animation: wt-pulse 2s ease-in-out infinite; }
+    @keyframes wt-shake {
+      0%, 3% { transform: translate(calc(-50% - 3px), -50%); }
+      4.5% { transform: translate(calc(-50% + 3px), -50%); }
+      6%, 100% { transform: translate(-50%, -50%); }
+    }
+    @keyframes wt-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.45); } 50% { box-shadow: 0 0 0 7px rgba(16, 185, 129, 0); } }
+
+    /* scene: installer wizard (Windows step 3) */
+    .wt-wizard {
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      width: min(300px, 78%); border-radius: 10px; padding: 14px;
+      background: rgba(24, 24, 27, 0.9); box-shadow: inset 0 0 0 1px var(--border);
+    }
+    .wt-wizard-title { font-family: var(--font-display); font-weight: 700; font-size: 0.8rem; margin-bottom: 10px; }
+    .wt-wizard-actions { margin-top: 14px; }
+
+    /* scene: payoff (mini app window → trash) */
+    .wt-paywin {
+      position: absolute; inset: 12px 16px; border-radius: 10px;
+      background: rgba(24, 24, 27, 0.8); box-shadow: inset 0 0 0 1px var(--border-soft);
+    }
+    .wt-payhead {
+      display: flex; align-items: center; gap: 6px; padding: 8px 10px;
+      border-bottom: 1px solid var(--border-soft);
+      font-family: var(--font-mono); font-size: 0.62rem; color: var(--text-faint);
+    }
+    .wt-livedot { width: 7px; height: 7px; border-radius: 50%; background: var(--emerald); box-shadow: 0 0 8px rgba(52, 211, 153, 0.8); }
+    .wt-payrow {
+      position: absolute; left: 10px; right: 10px; top: 42px;
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      padding: 8px 10px; border-radius: 8px;
+      background: rgba(9, 9, 11, 0.6); box-shadow: inset 0 0 0 1px var(--border-soft);
+      animation: wt-fly 3.4s ease-in-out infinite;
+    }
+    .wt-paypath {
+      font-family: var(--font-mono); font-size: 0.66rem; color: var(--text-dim);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .wt-paybadge { flex: none; font-family: var(--font-display); font-weight: 700; font-size: 0.66rem; color: var(--rose); }
+    .wt-trashzone { position: absolute; right: 14px; bottom: 10px; display: flex; align-items: center; gap: 7px; }
+    .wt-trashzone svg { color: var(--text-faint); }
+    .wt-freed { font-family: var(--font-mono); font-size: 0.66rem; color: var(--emerald); animation: wt-filepop 3.4s ease infinite; }
+    @keyframes wt-fly {
+      0%, 18% { transform: none; opacity: 1; }
+      55%, 72% { transform: translate(46%, 74%) scale(0.35); opacity: 0; }
+      92%, 100% { transform: none; opacity: 1; }
+    }
+
+    /* scene: linux orbit (squash a circular orbit into an ellipse; moon counter-squashed) */
+    .wt-orbitspace {
+      position: absolute; left: 50%; top: 48%; width: 200px; height: 200px;
+      transform: translate(-50%, -50%) scaleY(0.55);
+    }
+    .wt-orbitring { position: absolute; inset: 0; border: 1px dashed rgba(63, 63, 70, 0.9); border-radius: 50%; }
+    .wt-orbitcore { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); opacity: 0.9; }
+    .wt-orbitspin { position: absolute; inset: 0; animation: wt-orbit 12s linear infinite; }
+    .wt-orbitmoon { position: absolute; left: 50%; top: 0; transform: translate(-50%, -50%) scaleY(1.82); }
+    .wt-orbitfolder {
+      position: relative; display: block; width: 30px; height: 22px; border-radius: 4px;
+      background: rgba(39, 39, 42, 0.95); box-shadow: inset 0 0 0 1px var(--border);
+    }
+    .wt-orbitfolder::before {
+      content: ""; position: absolute; left: 0; top: -4px; width: 12px; height: 6px;
+      border-radius: 2px 4px 0 0; background: inherit; box-shadow: inset 0 0 0 1px var(--border);
+    }
+    .wt-orbittag {
+      position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
+      font-family: var(--font-mono); font-size: 0.6rem; letter-spacing: 0.2em; color: var(--text-faint);
+    }
+    @keyframes wt-orbit { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+    @media (max-width: 480px) {
+      .wt-panel { padding: 20px 18px 18px; }
+      .wt-illus { height: 132px; }
+      .wt-title { font-size: 1.15rem; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .scanline { animation: none; }
+      .btn, .card, .card--hefty, .card--mega, .card--ohlawd { transition: none; }
+      .walkthrough[open], .walkthrough[open]::backdrop,
+      .wt-dlarrow, .wt-dlfill, .wt-dlfile, .wt-appicon, .wt-foldershape,
+      .wt-osdlg, .wt-gobtn, .wt-payrow, .wt-freed, .wt-orbitspin,
+      .wt-dlstatus.is-busy { animation: none; }
+      .wt-tab, .wt-close, .wt-nav, .wt-dot, .wt-dlbtn { transition: none; }
+    }
+  </style>
+  <noscript>
+    <!-- no-JS fallback: a static CSS blackhole behind where the canvas would be -->
+    <style>
+      .hole-wrap {
+        background:
+          radial-gradient(circle at 50% 50%, #000 0 15%, transparent 15.5%),
+          radial-gradient(circle at 50% 50%, rgba(254, 215, 130, 0.9) 15% 15.6%, rgba(251, 146, 60, 0.5) 18%, rgba(251, 113, 133, 0.18) 26%, transparent 40%);
+      }
+    </style>
+  </noscript>
+</head>
+<body>
+
+  <header class="nav">
+    <div class="container nav-inner">
+      <a class="logo" href="./" aria-label="Dechonk home">
+        <svg width="22" height="22" viewBox="0 0 22 22" fill="none" aria-hidden="true">
+          <circle cx="11" cy="11" r="4.5" fill="#09090b" stroke="#34d399" stroke-width="1.6"/>
+          <ellipse cx="11" cy="11" rx="9.5" ry="3.4" stroke="#fb923c" stroke-width="1.4" transform="rotate(-18 11 11)"/>
+        </svg>
+        Dechonk
+      </a>
+      <nav class="nav-links" aria-label="Main">
+        <a href="#how">How it works</a>
+        <a href="#chonk">Chonk scale</a>
+        <a href="#faq">FAQ</a>
+        <a href="https://github.com/chengsokdara/dechonk" target="_blank" rel="noopener">GitHub</a>
+        <a class="btn btn--primary" href="https://github.com/chengsokdara/dechonk/releases" target="_blank" rel="noopener" data-download="auto">Download</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <!-- ============ HERO ============ -->
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="container hero-grid">
+        <div>
+          <span class="badge badge--chip">FREE · macOS · Windows · Linux · ~4 MB</span>
+          <h1 id="hero-title">Some folders bend&nbsp;spacetime. <span class="accent">Delete&nbsp;them.</span></h1>
+          <p class="hero-sub">
+            Dechonk scans your machine, finds every <span class="inline-code">node_modules</span>
+            and Rust <span class="inline-code">target</span> blackhole, and weighs them in chonk units.
+            One click sends them past the event horizon.
+            <strong>Your code stays. The gravity goes.</strong>
+          </p>
+          <div class="hero-ctas">
+            <a class="btn btn--primary" href="https://github.com/chengsokdara/dechonk/releases" target="_blank" rel="noopener" data-download="macos">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Download for macOS
+            </a>
+            <a class="btn btn--ghost" href="https://github.com/chengsokdara/dechonk/releases" target="_blank" rel="noopener" data-download="windows">Windows</a>
+            <a class="btn btn--ghost" href="https://github.com/chengsokdara/dechonk/releases" target="_blank" rel="noopener" data-download="linux">Linux</a>
+          </div>
+          <div class="trust">
+            <span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg> Recoverable via OS Trash</span>
+            <span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg> Source files never touched</span>
+            <span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg> Nested installs deduplicated</span>
+          </div>
+          <p class="hero-du" aria-hidden="true">
+            $ du -sh node_modules&nbsp;&nbsp;<span class="out">1.4 GB</span>&nbsp;&nbsp;<span class="cmt"># every time</span><br>
+            $ du -sh target&nbsp;&nbsp;<span class="out">2.3 GB</span>&nbsp;&nbsp;<span class="cmt"># cargo remembers everything</span>
+          </p>
+        </div>
+        <div class="hole-wrap" role="img" aria-label="A black hole pulling node_modules and cargo target folders in">
+          <canvas id="blackhole"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <hr class="scanline" aria-hidden="true">
+
+    <!-- ============ PROBLEM ============ -->
+    <section id="problem" aria-labelledby="problem-title">
+      <div class="container">
+        <p class="eyebrow">The problem</p>
+        <h2 id="problem-title">You don't have a storage problem.<br>You have a <span class="inline-code">node_modules</span> problem.</h2>
+        <p class="section-lede">
+          Every <span class="inline-code">npm install</span> leaves a folder that never stops eating.
+          Cargo compiles quietly into <span class="inline-code">target/</span> and never leaves.
+          Multiply that by every project you've ever touched, and your free space quietly falls into orbit.
+          Dechonk finds them all, then shames them properly.
+        </p>
+
+        <div class="scanboard" role="img" aria-label="Sample Dechonk scan results showing large node_modules and cargo target folders with chonk badges totalling 3.5 gigabytes">
+          <div class="scanboard-head">
+            <span class="dot dot--live"></span><span class="dot"></span><span class="dot"></span>
+            <span>&nbsp;Dechonk · ~/Projects&nbsp;&nbsp;·&nbsp;&nbsp;scanning complete</span>
+          </div>
+          <div class="scanrow">
+            <span class="path"><span class="dim">~/Projects/</span>definitely-final-v2</span>
+            <span class="size">2.1 GB</span>
+            <span class="badge badge--ohlawd">OH LAWD HE COMIN</span>
+            <span class="badge badge--age">ancient</span>
+          </div>
+          <div class="scanrow">
+            <span class="path"><span class="dim">~/Projects/work/</span>client-portal</span>
+            <span class="size">684 MB</span>
+            <span class="badge badge--mega">MEGA CHONKER</span>
+            <span class="badge badge--age">stale</span>
+          </div>
+          <div class="scanrow">
+            <span class="path"><span class="dim">~/Projects/learn/</span>rust-adventures/target&nbsp;<span class="badge badge--kind">cargo</span></span>
+            <span class="size">412 MB</span>
+            <span class="badge badge--mega">MEGA CHONKER</span>
+            <span class="badge badge--age">stale</span>
+          </div>
+          <div class="scanrow">
+            <span class="path"><span class="dim">~/Projects/sidequests/</span>todo-clone-7</span>
+            <span class="size">287 MB</span>
+            <span class="badge badge--hefty">HEFTY CHONK</span>
+            <span class="badge badge--age">ancient</span>
+          </div>
+          <div class="scanrow scanrow--total">
+            <span class="path"><span class="dim">Total reclaimable · 41 folders</span></span>
+            <span class="size">3.5 GB</span>
+            <span class="badge badge--chip">1 click → event horizon</span>
+            <span class="time">3.8s</span>
+          </div>
+        </div>
+        <p class="scan-caption">Actual Dechonk output, minus the actual Dechonk. Scan your own machine for the real numbers.</p>
+      </div>
+    </section>
+
+    <!-- ============ CHONK SCALE ============ -->
+    <section id="chonk" aria-labelledby="chonk-title">
+      <div class="container">
+        <p class="eyebrow">The unit of measurement</p>
+        <h2 id="chonk-title">Know your chonk.</h2>
+        <p class="section-lede">
+          Every folder gets graded on the internationally recognized chonk scale.
+          There is no appeal process.
+        </p>
+        <div class="grid-3">
+          <div class="card card--hefty">
+            <span class="badge badge--hefty">HEFTY CHONK</span>
+            <p>Noticeable. The SSD has started to hold opinions about your choices.</p>
+            <p class="threshold">≥ 200 MB</p>
+          </div>
+          <div class="card card--mega">
+            <span class="badge badge--mega">MEGA CHONKER</span>
+            <p>That's a feature-length movie. It's not a movie. It's dependencies.</p>
+            <p class="threshold">≥ 500 MB</p>
+          </div>
+          <div class="card card--ohlawd">
+            <span class="badge badge--ohlawd">OH LAWD HE COMIN</span>
+            <p>Spacetime visibly curved. Somewhere, an <span class="inline-code">npm install</span> left a mark.</p>
+            <p class="threshold">≥ 1 GB</p>
+          </div>
+        </div>
+        <p class="chonk-note">
+          <span>Badges are awarded automatically, because shaming works better than unit tests.</span>
+          <a href="https://twitter.com/intent/tweet?text=My%20biggest%20node_modules%20is%20officially%20a%20%22OH%20LAWD%20HE%20COMIN%22.%20Dechonk%20told%20me.%20Some%20folders%20bend%20spacetime.%20Delete%20them.&url=https%3A%2F%2Fchengsokdara.github.io%2Fdechonk%2F" target="_blank" rel="noopener">Post your biggest chonk →</a>
+        </p>
+      </div>
+    </section>
+
+    <!-- ============ HOW ============ -->
+    <section id="how" aria-labelledby="how-title">
+      <div class="container">
+        <p class="eyebrow">How it works</p>
+        <h2 id="how-title">Three steps. Zero regret.</h2>
+        <div class="grid-3">
+          <div class="step">
+            <div class="step-num" aria-hidden="true">01</div>
+            <h3>Scan</h3>
+            <p>A parallel Rust walker sweeps your home folder, all drives, or anywhere you point it. Nested installs are deduplicated and junk folders are skipped before they can waste a millisecond. Rust <span class="inline-code">target</span> folders only count when cargo's own <span class="inline-code">CACHEDIR.TAG</span> marker is inside, so lookalikes are never touched.</p>
+          </div>
+          <div class="step">
+            <div class="step-num" aria-hidden="true">02</div>
+            <h3>Assess</h3>
+            <p>Sizes stream in live as it walks. Sort by chonk, filter by how long nobody has touched it, and deal with the biggest offenders first.</p>
+          </div>
+          <div class="step">
+            <div class="step-num" aria-hidden="true">03</div>
+            <h3>Dechonk</h3>
+            <p>One click sends folders past the event horizon: your OS Trash, and the only horizon in physics with a return policy. Need them gone for good? Drop them into the singularity: permanent deletion, always behind a confirmation that tells you exactly what it frees.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ PHYSICS ============ -->
+    <section class="physics" aria-labelledby="physics-title">
+      <div class="container">
+        <p class="eyebrow">Peer-reviewed*</p>
+        <h2 id="physics-title">Field notes from the event horizon</h2>
+        <div class="physics-grid">
+          <div class="card phys-card">
+            <span class="tag">Observation 001</span>
+            <h3>The one-way principle</h3>
+            <p>Anything that crosses the event horizon (<span class="inline-code">npm install</span>) cannot escape. It can only be duplicated, elsewhere, at 3 a.m., during a build.</p>
+          </div>
+          <div class="card phys-card">
+            <span class="tag">Observation 002</span>
+            <h3>Extreme density</h3>
+            <p>A single 400 MB <span class="inline-code">node_modules</span> can contain over 30,000 files. Nothing else on your disk achieves this density. Physicists are not okay.</p>
+          </div>
+          <div class="card phys-card">
+            <span class="tag">Observation 003</span>
+            <h3>Time dilation</h3>
+            <p>You told yourself you'd clean it up "this weekend." That was four fiscal quarters ago. Time genuinely bends near a chonker.</p>
+          </div>
+        </div>
+        <p class="footnote">*Not peer-reviewed. Reviewed by your disk.</p>
+      </div>
+    </section>
+
+    <!-- ============ NEVER ============ -->
+    <section id="safety" aria-labelledby="safety-title">
+      <div class="container">
+        <p class="eyebrow">Safety</p>
+        <h2 id="safety-title">What Dechonk will never do</h2>
+        <div class="never-grid">
+          <div class="never-item">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            <div><h3>Touch your source files</h3><p>Only build-artifact folders are targets: dependency folders and cargo build caches. Your code isn't even scanned, let alone moved.</p></div>
+          </div>
+          <div class="never-item">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            <div><h3>Follow symlinks into the void</h3><p>Symlinks are never followed. Whatever lives outside the folder stays outside the folder.</p></div>
+          </div>
+          <div class="never-item">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            <div><h3>Delete without asking</h3><p>Everything stops at the event horizon first: your OS Trash, fully recoverable. The singularity (permanent delete) always asks, and always says exactly what it will free.</p></div>
+          </div>
+          <div class="never-item">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            <div><h3>Phone home</h3><p>No telemetry, no accounts, no network. The scanner doesn't know what the internet is.</p></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ FAQ ============ -->
+    <section id="faq" aria-labelledby="faq-title">
+      <div class="container">
+        <p class="eyebrow">FAQ</p>
+        <h2 id="faq-title">Questions from the event horizon</h2>
+        <div class="faq-list">
+          <details>
+            <summary><span class="q">Is deleting <span class="inline-code">node_modules</span> safe?</span><span class="plus" aria-hidden="true">+</span></summary>
+            <p>Yes. Your source code is never touched, and everything Dechonk removes is regenerable: dependencies come back with <span class="inline-code">npm install</span> (or <span class="inline-code">pnpm</span>/<span class="inline-code">yarn</span>/<span class="inline-code">bun</span>; Dechonk doesn't judge), Rust build output with <span class="inline-code">cargo build</span>. They're the only multi-gigabyte folders on your machine you're supposed to delete.</p>
+          </details>
+          <details>
+            <summary><span class="q">Does Dechonk delete Rust <span class="inline-code">target</span> folders?</span><span class="plus" aria-hidden="true">+</span></summary>
+            <p>Yes, but carefully. A folder named <span class="inline-code">target</span> is only ever reported when cargo's own <span class="inline-code">CACHEDIR.TAG</span> marker file is inside it, which is how cargo flags its build cache. A plain folder that happens to be named <span class="inline-code">target</span> is walked past, never reported, never deleted.</p>
+          </details>
+          <details>
+            <summary><span class="q">Does Dechonk delete anything permanently?</span><span class="plus" aria-hidden="true">+</span></summary>
+            <p>No. Folders always stop at the event horizon first (your OS Trash, fully recoverable). Dropping them into the singularity (permanent deletion) is opt-in and always behind a confirmation dialog that tells you exactly how much space it frees.</p>
+          </details>
+          <details>
+            <summary><span class="q">How fast is the scan?</span><span class="plus" aria-hidden="true">+</span></summary>
+            <p>The walker is written in Rust and runs discovery and size enrichment in parallel. Whole-drive scans typically finish in seconds, and you watch the numbers land live while it works.</p>
+          </details>
+          <details>
+            <summary><span class="q">Which platforms does it support?</span><span class="plus" aria-hidden="true">+</span></summary>
+            <p>macOS, Windows, and Linux. The app is built with Tauri, weighs about 4 MB, and opens instantly. Free, no account required.</p>
+          </details>
+          <details>
+            <summary><span class="q">Why is it called Dechonk?</span><span class="plus" aria-hidden="true">+</span></summary>
+            <p>Because the internet decided oversized folders are "chonky," and we are not strong enough to fight the internet. Dechonking is the act of restoring a folder to a reasonable mass. See also: the chonk scale.</p>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ FINAL CTA ============ -->
+    <section class="final" aria-labelledby="final-title">
+      <div class="container">
+        <h2 id="final-title">Stop feeding the blackhole.</h2>
+        <p class="section-lede">Download Dechonk, scan once, and reclaim the space your dependencies buried.</p>
+        <div class="hero-ctas">
+          <a class="btn btn--primary" href="https://github.com/chengsokdara/dechonk/releases" target="_blank" rel="noopener" data-download="macos">Download for macOS</a>
+          <a class="btn btn--ghost" href="https://github.com/chengsokdara/dechonk/releases" target="_blank" rel="noopener" data-download="windows">Windows</a>
+          <a class="btn btn--ghost" href="https://github.com/chengsokdara/dechonk/releases" target="_blank" rel="noopener" data-download="linux">Linux</a>
+        </div>
+        <p class="micro">latest builds live on GitHub Releases</p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="container footer-inner">
+      <span>Dechonk · reclaim your disk. © 2026</span>
+      <nav aria-label="Footer">
+        <a href="https://github.com/chengsokdara/dechonk" target="_blank" rel="noopener">GitHub</a>
+        <a href="#chonk">Chonk scale</a>
+        <a href="#faq">FAQ</a>
+      </nav>
+      <span>Built with Tauri · not affiliated with npm, Inc. or astrophysics</span>
+    </div>
+  </footer>
+
+  <!-- ============ DOWNLOAD WALKTHROUGH (rendered by walkthrough.js) ============ -->
+  <dialog id="walkthrough" class="walkthrough" aria-labelledby="walkthrough-title"></dialog>
+
+  <script src="./assets/js/walkthrough.js" defer></script>
+  <script src="./assets/js/blackhole.js" defer></script>
+</body>
+</html>
